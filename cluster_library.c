@@ -1187,6 +1187,7 @@ static int cluster_sock_write(redisCluster *c, const char *cmd, size_t sz,
     if (c->redir_type == REDIR_ASK) {
         redis_sock = cluster_get_asking_sock(c TSRMLS_CC);
         if (cluster_send_asking(redis_sock TSRMLS_CC) < 0) {
+            printf("cluster_sock_write - Redirect\n");
             return -1;
         }
     }
@@ -1198,23 +1199,33 @@ static int cluster_sock_write(redisCluster *c, const char *cmd, size_t sz,
      * at random. */
     if (failover == REDIS_FAILOVER_NONE) {
         /* Success if we can send our payload to the master */
-        if (CLUSTER_SEND_PAYLOAD(redis_sock, cmd, sz)) return 0;
+        if (CLUSTER_SEND_PAYLOAD(redis_sock, cmd, sz)){
+            printf("cluster_sock_write - No Failover - Success\n");
+            return 0;
+        }
     } else if (failover == REDIS_FAILOVER_ERROR) {
         /* Try the master, then fall back to any slaves we may have */
         if (CLUSTER_SEND_PAYLOAD(redis_sock, cmd, sz) ||
-           !cluster_dist_write(c, cmd, sz, 1 TSRMLS_CC)) return 0;
+           !cluster_dist_write(c, cmd, sz, 1 TSRMLS_CC)) {
+                printf("cluster_sock_write - Failover Error - Success\n"); 
+               return 0;
+            }
     } else {
         /* Include or exclude master node depending on failover option and
          * attempt to make our write */
         nomaster = failover == REDIS_FAILOVER_DISTRIBUTE_SLAVES;
         if (!cluster_dist_write(c, cmd, sz, nomaster TSRMLS_CC)) {
             /* We were able to write to a master or slave at random */
+            printf("cluster_sock_write - Failover Distribute Slaves - Success\n");
             return 0;
         }
     }
 
     /* Don't fall back if direct communication with this slot is required. */
-    if (direct) return -1;
+    if (direct) {
+        printf("cluster_sock_write - direct - Failed\n");
+        return -1;
+    }
 
     /* Fall back by attempting the request against every known node */
     ZEND_HASH_FOREACH_PTR(c->nodes, seed_node) {
@@ -1225,11 +1236,13 @@ static int cluster_sock_write(redisCluster *c, const char *cmd, size_t sz,
         if (CLUSTER_SEND_PAYLOAD(seed_node->sock, cmd, sz)) {
             c->cmd_slot = seed_node->slot;
             c->cmd_sock = seed_node->sock;
+            printf("cluster_sock_write - After switch - Success\n");
             return 0;
         }
     } ZEND_HASH_FOREACH_END();
 
     /* We were unable to write to any node in our cluster */
+    printf("cluster_sock_write - Failed\n");
     return -1;
 }
 
@@ -1441,6 +1454,7 @@ PHP_REDIS_API short cluster_send_command(redisCluster *c, short slot, const char
 
         /* Figure out if we've timed out trying to read or write the data */
         timedout = resp && c->waitms ? mstime() - msstart >= c->waitms : 0;
+        printf("cluster_send_command - LOOP %d / %d / %d\n", resp, c->clusterdown, timedout);
     } while (resp != 0 && !c->clusterdown && !timedout);
 
     // If we've detected the cluster is down, throw an exception
